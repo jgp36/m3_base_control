@@ -1,0 +1,17 @@
+<package>
+  <description brief="m3_base_ctrl">
+
+     m3_base_ctrl
+
+  </description>
+  <author>Josh Petersen</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/m3_base_ctrl</url>
+  <depend package="roscpp"/>
+  <depend package="std_msgs"/>
+  <depend package="wbc_core"/>
+
+</package>
+
+

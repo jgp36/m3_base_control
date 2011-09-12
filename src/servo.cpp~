@@ -1,0 +1,149 @@
+#include <m3_base_ctrl/rt_util.h>
+
+// one of these just for logging timestamp
+#include <rtai_sched.h>
+#include <rtai_shm.h>
+#include <rtai.h>
+#include <rtai_sem.h>
+#include <rtai_nam2num.h>
+#include <rtai_registry.h>
+
+#include <ros/ros.h>
+#include <jspace/test/sai_util.hpp>
+#include <boost/scoped_ptr.hpp>
+#include <err.h>
+#include <signal.h>
+#include <m3_base_ctrl/basecontroller.h>
+
+using namespace m3_base_ctrl;
+using namespace opspace;
+using namespace wbc_core_opspace;
+using namespace boost;
+using namespace std;
+
+
+static bool verbose(false);
+static long long servo_rate(500);
+static long long actual_servo_rate;
+static shared_ptr<BaseController> base_controller;
+  
+static void handle(int signum)
+{
+  if (ros::ok()) {
+    warnx("caught signal, requesting shutdown");
+    ros::shutdown();
+  }
+  else {
+    errx(EXIT_SUCCESS, "caught signal (again?), attempting forced exit");
+  }
+}
+
+
+namespace {
+  
+  
+  class Servo
+    : public RTUtil
+  {
+  public:
+    
+    
+    virtual int init(jspace::State const & state) {
+      // XXXX Set your goal position and gains here
+      jspace::Vector goal(Vector::Zero(3));
+      jspace::Vector kp(10*Vector::Ones(3));
+      jspace::Vector kd(Vector::Ones(3));
+      ////////////////////////////////////////////
+
+      status = base_controller->init(state,goal,kp,kd);
+      if ( ! status ) {
+	warnx("Servo::init(): base_controller->init() failed: %s", status.errstr.c_str());
+	return -1;
+      }
+      return 0;
+    }
+    
+    
+    virtual int update(jspace::State const & state,
+		       jspace::Vector & command)
+    {
+      base_controller->update(state);
+      status = head_controller->computeCommand(command);
+      if ( ! status ) {
+	warnx("Servo::update(): base_controller->computeCommand() failed: %s", status.errstr.c_str());
+	return -1;
+      }
+      return 0;
+    }
+
+    virtual int cleanup(void)
+    {
+      return 0;
+    }
+    
+    
+    virtual int slowdown(long long iteration,
+			 long long desired_ns,
+			 long long actual_ns)
+    {
+      actual_servo_rate = 1000000000 / actual_ns;
+      return 0;
+    }
+  };
+  
+}
+
+
+int main(int argc, char ** argv)
+{
+  struct sigaction sa;
+  bzero(&sa, sizeof(sa));
+  sa.sa_handler = handle;
+  if (0 != sigaction(SIGINT, &sa, 0)) {
+    err(EXIT_FAILURE, "sigaction");
+  }
+  
+  
+  ros::init(argc, argv, "m3_base_ctrl_servo", ros::init_options::NoSigintHandler);
+  ros::NodeHandle node("~");
+  
+  Servo servo;
+  try {
+    if (verbose) {
+      warnx("starting servo with %lld Hz", servo_rate);
+    }
+    actual_servo_rate = servo_rate;
+    servo.start(servo_rate);
+  }
+  catch (std::runtime_error const & ee) {
+    errx(EXIT_FAILURE, "failed to start servo: %s", ee.what());
+  }
+  
+  warnx("started servo RT thread");
+  ros::Time dbg_t0(ros::Time::now());
+  ros::Time dump_t0(ros::Time::now());
+  ros::Duration dbg_dt(0.1);
+  ros::Duration dump_dt(0.05);
+  
+  while (ros::ok()) {
+    ros::Time t1(ros::Time::now());
+    if (verbose) {
+      if (t1 - dbg_t0 > dbg_dt) {
+	dbg_t0 = t1;
+	cout << "--------------------------------------------------\n";
+	jspace::pretty_print(base_controller->getState().position_, cout, "jpos", "  ");
+	jspace::pretty_print(base_controller->getState().velocity_, cout, "jvel", "  ");
+	jspace::pretty_print(base_controller->getCommand(), cout, "gamma", "  ");
+	cout << "servo rate: " << actual_servo_rate << "\n";
+      }
+    }
+    if (t1 - dump_t0 > dump_dt) {
+      dump_t0 = t1;
+    }
+    ros::spinOnce();
+    usleep(10000);		// 100Hz-ish
+  }
+  
+  warnx("shutting down");
+  servo.shutdown();
+}
